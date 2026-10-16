@@ -1,0 +1,7 @@
+{
+  "appId": "com.example.minerunner",
+  "appName": "Mine Runner",
+  "webDir": "www",
+  "backgroundColor": "#120d0a",
+  "android": { "allowMixedContent": false }
+}

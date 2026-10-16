@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#120d0a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<title>Mine Runner</title>
+<style>
+:root{--bg:#120d0a;--gold:#f2c230;--ink:#f6e9c8}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;overscroll-behavior:none;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+#app{height:100%;display:grid;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+@media (orientation:portrait){#app{grid-template-columns:1fr 1fr;grid-template-rows:1fr auto;grid-template-areas:"stage stage" "pad acts"}}
+@media (orientation:landscape){#app{grid-template-columns:auto 1fr auto;grid-template-rows:1fr;grid-template-areas:"pad stage acts"}}
+#stage{grid-area:stage;min-width:0;min-height:0;display:flex;flex-direction:column}
+#hud{display:flex;gap:8px;justify-content:space-between;align-items:center;padding:6px 10px;font-weight:700;font-size:clamp(12px,2.8vmin,18px);white-space:nowrap}
+#hud .hb{display:flex;gap:6px}
+.mini{font-size:inherit;background:#2a1d14;color:var(--ink);border:1px solid #5a3f27;border-radius:8px;padding:3px 9px;touch-action:manipulation}
+#wrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+canvas{display:block;border-radius:6px;box-shadow:0 0 0 2px #3a2a1e}
+#pad{grid-area:pad;position:relative;width:min(44vw,190px);aspect-ratio:1;margin:8px 14px;align-self:center;justify-self:center;border-radius:50%;background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.14);touch-action:none}
+@media (orientation:landscape){#pad{width:min(36vh,170px)}}
+#pad .arr{position:absolute;font-style:normal;font-size:clamp(18px,4.5vmin,30px);color:rgba(255,255,255,.4);width:34%;height:34%;display:flex;align-items:center;justify-content:center;border-radius:50%}
+#pad .arr.on{color:#fff;background:rgba(242,194,48,.45)}
+#pad .up{top:2%;left:33%}#pad .down{bottom:2%;left:33%}#pad .left{left:2%;top:33%}#pad .right{right:2%;top:33%}
+#acts{grid-area:acts;display:flex;gap:14px;align-items:center;justify-content:center;margin:8px 14px}
+@media (orientation:landscape){#acts{flex-direction:column}}
+.dig{width:min(21vw,86px);height:min(21vw,86px);border-radius:50%;border:2px solid rgba(255,255,255,.18);background:rgba(255,255,255,.07);color:var(--ink);font-size:clamp(16px,4vmin,24px);line-height:1.1;touch-action:none}
+@media (orientation:landscape){.dig{width:min(20vh,84px);height:min(20vh,84px)}}
+.dig.on{background:rgba(242,194,48,.5);color:#fff}
+#overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(10,6,4,.78);z-index:10;padding:16px}
+.card{background:#2a1d14;border:2px solid #6a4a2a;border-radius:16px;padding:18px 22px;max-width:440px;width:100%;text-align:center;max-height:100%;overflow:auto}
+.card h1{margin:0 0 6px;color:var(--gold);font-size:clamp(22px,5vmin,32px);letter-spacing:.04em}
+.card p{margin:6px 0 14px;line-height:1.4;font-size:clamp(13px,2.8vmin,16px)}
+.btn{display:block;width:100%;margin:8px 0 0;padding:12px 14px;font-size:17px;font-weight:700;color:#1a1008;background:var(--gold);border:0;border-radius:12px;touch-action:manipulation}
+.btn:active{filter:brightness(.9)}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <div id="hud">
+      <span id="hLevel">Ур. 1</span><span id="hGold">🪙 0</span><span id="hScore">0</span><span id="hLives"></span>
+      <span class="hb"><button id="bSound" class="mini">🔊</button><button id="bPause" class="mini">⏸</button></span>
+    </div>
+    <div id="wrap"><canvas id="cv"></canvas></div>
+  </div>
+  <div id="pad"><i class="arr up">▲</i><i class="arr down">▼</i><i class="arr left">◀</i><i class="arr right">▶</i></div>
+  <div id="acts"><button id="digL" class="dig">⛏<br>◀</button><button id="digR" class="dig">⛏<br>▶</button></div>
+</div>
+<div id="overlay"><div class="card"><h1 id="oT"></h1><p id="oP"></p><div id="oB"></div></div></div>
+
+<script>
+'use strict';
+/* =====================  MINE RUNNER  =====================
+   Оригинальная игра в жанре «собери золото, копай ямы, убегай от стражей».
+   Один файл, без зависимостей. */
+const COLS = 20, ROWS = 12;
+const HOLE_TIME = 5.5;      // сколько секунд яма открыта
+const DIG_T = 0.25;         // длительность копания
+const $ = id => document.getElementById(id);
+
+/* ---------- уровни: '.' пусто, # кирпич, = сталь, H лестница, - канат,
+              $ золото, P игрок, E страж, S скрытая лестница выхода ---------- */
+const HAND = [
+  [
+    "..................S.",
+    "..................S.",
+    "..................S.",
+    "..................S.",
+    ".$...$....$....$..S.",
+    "####H##########H####",
+    "....H..........H....",
+    ".$..H...$......H.$..",
+    "####H##########H####",
+    "....H..........H....",
+    "P...H....$.....H....",
+    "####################"
+  ],
+  [
+    "................S...",
+    "................S...",
+    "................S...",
+    "................S...",
+    ".$...$.......$..S...",
+    "###H##############H#",
+    "...H..............H.",
+    "...H.$---------..$H.",
+    "###H##.........###H#",
+    "...H..............H.",
+    "P..H....$...E.....H.",
+    "####################"
+  ],
+  [
+    ".................S..",
+    ".................S..",
+    ".................S..",
+    ".................S..",
+    "..$......$.....$.S..",
+    "#H##############H###",
+    ".H..............H...",
+    ".H....$.....$...H...",
+    "#H##############H###",
+    ".H.......$....$.H...",
+    ".H.P........E...H...",
+    "####################"
+  ]
+];
+
+/* ---------- состояние ---------- */
+let grid = [], gold = [], goldLeft = 0, exitOpen = false, holes = [], parts = [], enemies = [], player = null;
+let level = 1, score = 0, lives = 3, state = 'menu', paused = false, tNow = 0, banner = null, deathT = 0, clearT = 0;
+let eSpeed = 3.2;
+const levelCache = new Map();
+
+/* ---------- правила мира ---------- */
+const inb = (x, y) => x >= 0 && x < COLS && y >= 0 && y < ROWS;
+const tile = (x, y) => inb(x, y) ? grid[y][x] : '=';
+const isSolid = (x, y) => { const c = tile(x, y); return c === '#' || c === '='; };
+const isLadder = (x, y) => tile(x, y) === 'H';
+const isRope = (x, y) => tile(x, y) === '-';
+const canEnter = (x, y) => inb(x, y) && !isSolid(x, y);
+const trappedAt = (x, y) => enemies.some(e => !e.dead && e.trapped && e.x === x && e.y === y);
+const holeAt = (x, y) => holes.find(h => h.x === x && h.y === y);
+
+function enemyAt(x, y, ex) {
+  return enemies.some(e => e !== ex && !e.dead && ((e.x === x && e.y === y) || (e.moving && e.tx === x && e.ty === y)));
+}
+function playerAt(x, y) {
+  return player && ((player.x === x && player.y === y) || (player.moving && player.tx === x && player.ty === y));
+}
+function hasSupport(x, y, a) {
+  return isSolid(x, y + 1) || isLadder(x, y + 1) || !!(a && a.grace) || !!(a && a.isPlayer && trappedAt(x, y + 1));
+}
+function standing(x, y, a) { return isLadder(x, y) || isRope(x, y) || hasSupport(x, y, a); }
+
+function options(x, y, a) {
+  const r = [];
+  if (!standing(x, y, a)) { if (canEnter(x, y + 1)) r.push([0, 1]); return r; }
+  if (canEnter(x - 1, y)) r.push([-1, 0]);
+  if (canEnter(x + 1, y)) r.push([1, 0]);
+  if (isLadder(x, y) && canEnter(x, y - 1)) r.push([0, -1]);
+  if (canEnter(x, y + 1) && !(a && a.grace && !a.isPlayer)) r.push([0, 1]);
+  return r;
+}
+
+/* ---------- генерация уровней ---------- */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function genLevel(n, attempt) {
+  const rnd = mulberry32(n * 7919 + attempt * 104729 + 12345);
+  const R = (a, b) => a + Math.floor(rnd() * (b - a + 1));
+  const g = Array.from({ length: ROWS }, () => Array(COLS).fill('.'));
+  for (let x = 0; x < COLS; x++) { g[11][x] = '#'; g[8][x] = '#'; g[5][x] = '#'; }
+  const pickTwo = () => { let a, b, k = 0; do { a = R(1, 18); b = R(1, 18); k++; } while (Math.abs(a - b) < 7 && k < 50); return [a, b]; };
+  const ab = pickTwo(), bc = pickTwo();
+  for (const c of ab) for (let y = 8; y <= 10; y++) g[y][c] = 'H';
+  for (const c of bc) for (let y = 5; y <= 7; y++) g[y][c] = 'H';
+  let sx; { let k = 0; do { sx = R(2, 18); k++; } while ((g[5][sx] !== '#') && k < 50); }
+  // разрывы с канатами
+  for (const row of [8, 5]) {
+    if (rnd() < 0.65) {
+      const w = R(2, 4), gs = R(3, 14 - w + 1);
+      let ok = true;
+      for (let x = gs - 1; x <= gs + w; x++) { if (x < 0 || x >= COLS) continue; if (g[row][x] !== '#' || (row === 5 && Math.abs(x - sx) < 1)) ok = false; if (g[row - 1][x] !== '.') ok = false; }
+      if (row === 5 && sx >= gs - 1 && sx <= gs + w) ok = false;
+      if (ok) for (let x = gs; x < gs + w; x++) { g[row][x] = '.'; g[row - 1][x] = '-'; }
+    }
+  }
+  const used = new Set();
+  const free = (x, y) => g[y][x] === '.' && y + 1 < ROWS && g[y + 1][x] === '#' && x !== sx && !used.has(y * COLS + x);
+  const place = (c, rows, count, filter) => {
+    let placed = 0, k = 0;
+    while (placed < count && k++ < 300) {
+      const y = rows[R(0, rows.length - 1)], x = R(0, COLS - 1);
+      if (!free(x, y) || (filter && !filter(x, y))) continue;
+      g[y][x] = c; used.add(y * COLS + x); placed++;
+    }
+    return placed;
+  };
+  for (const r of [10, 7, 4]) place('$', [r], R(2, 3));
+  // «висящее» золото: нужно прокопать пол
+  const F = n >= 4 ? Math.min(3, 1 + Math.floor((n - 4) / 4)) : 0;
+  for (let i = 0, k = 0; i < F && k < 200; k++) {
+    const row = rnd() < 0.5 ? 8 : 5, f = R(2, 17);
+    const below = row + 1, stand = row === 8 ? 10 : 7;
+    if (g[row][f] !== '#' || g[row - 1][f] !== '.' || g[row - 1][f - 1] !== '.' || g[row - 1][f + 1] !== '.') continue;
+    if (g[below][f] !== '.' || g[stand][f] !== '.' || f === sx) continue;
+    if (g[row - 1][f - 1] === '-' || g[row - 1][f + 1] === '-') continue;
+    g[below][f] = '$'; i++;
+  }
+  // игрок
+  let px = -1;
+  for (let k = 0; k < 200 && px < 0; k++) { const x = R(0, COLS - 1); if (g[10][x] === '.' && g[11][x] === '#') px = x; }
+  if (px < 0) px = 0;
+  g[10][px] = 'P';
+  // стражи
+  const E = Math.min(5, 1 + Math.floor((n - 2) / 2));
+  for (let i = 0, k = 0; i < E && k < 400; k++) {
+    const y = [10, 7, 4][R(0, 2)], x = R(0, COLS - 1);
+    if (!free(x, y)) continue;
+    if (y === 10 && Math.abs(x - px) < 6) continue;
+    g[y][x] = 'E'; used.add(y * COLS + x); i++;
+  }
+  for (let y = 0; y <= 4; y++) g[y][sx] = 'S';
+  return g.map(r => r.join(''));
+}
+
+/* проверка «решаемости» (упрощённая): всё золото достижимо с учётом копания */
+function levelValid(rows) {
+  const saved = grid;
+  const g = rows.map(r => [...r].map(c => (c === '.' || c === 'P' || c === 'E' || c === '$') ? ' ' : (c === 'S' ? 'H' : c)));
+  const golds = new Set(); let sx = -1, sy = -1;
+  rows.forEach((r, y) => [...r].forEach((c, x) => { if (c === '$') golds.add(y * COLS + x); if (c === 'P') { sx = x; sy = y; } }));
+  if (sx < 0) return false;
+  grid = g;
+  const bfs = start => {
+    const seen = new Set([start]), q = [start];
+    while (q.length) {
+      const c = q.pop(), cx = c % COLS, cy = (c / COLS) | 0;
+      for (const o of options(cx, cy, null)) { const n = (cy + o[1]) * COLS + cx + o[0]; if (!seen.has(n)) { seen.add(n); q.push(n); } }
+    }
+    return seen;
+  };
+  try {
+    const R = bfs(sy * COLS + sx);
+    // каждую возможную яму проверяем по отдельности (яма потом зарастает)
+    for (let it = 0; it < 30; it++) {
+      let grew = false;
+      for (const k of [...R]) {
+        const x = k % COLS, y = (k / COLS) | 0;
+        if (y + 1 >= ROWS || !isSolid(x, y + 1)) continue;
+        for (const dx of [-1, 1]) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= COLS || g[y][nx] !== ' ' || golds.has(y * COLS + nx) || g[y + 1][nx] !== '#') continue;
+          g[y + 1][nx] = ' ';
+          const s = bfs(y * COLS + x);
+          g[y + 1][nx] = '#';
+          for (const c of s) if (!R.has(c)) { R.add(c); grew = true; }
+        }
+      }
+      if (!grew) break;
+    }
+    for (const k of golds) if (!R.has(k)) return false;
+    for (const k of R) if (k < COLS) return true;
+    return false;
+  } finally { grid = saved; }
+}
+
+function getLevel(n) {
+  if (levelCache.has(n)) return levelCache.get(n);
+  let rows = null;
+  if (n <= HAND.length) rows = HAND[n - 1];
+  else {
+    for (let a = 0; a < 80 && !rows; a++) { const r = genLevel(n, a); if (levelValid(r)) rows = r; }
+    if (!rows) rows = HAND[(n - 1) % HAND.length];
+  }
+  levelCache.set(n, rows);
+  return rows;
+}
+
+/* ---------- акторы ---------- */
+function mk(x, y, isPlayer) {
+  return { x, y, tx: x, ty: y, prog: 0, moving: false, spd: 5, face: 1, ph: 0, isPlayer, grace: false, escaping: false,
+    trapped: false, trapT: 0, dead: false, respawn: 0, wait: 0, dig: 0, digDx: 0, flick: 0, sx: x, sy: y };
+}
+
+function loadLevel() {
+  const rows = getLevel(level);
+  grid = []; gold = []; enemies = []; holes = []; parts = []; goldLeft = 0; exitOpen = false; banner = null;
+  let px = 1, py = ROWS - 2;
+  for (let y = 0; y < ROWS; y++) {
+    const row = rows[y] || ''; grid.push([]); gold.push([]);
+    for (let x = 0; x < COLS; x++) {
+      const c = row[x] || '.'; let t = ' ', g = false;
+      if (c === '#' || c === '=' || c === 'H' || c === '-' || c === 'S') t = c;
+      else if (c === '$') { g = true; goldLeft++; }
+      else if (c === 'P') { px = x; py = y; }
+      else if (c === 'E') enemies.push(mk(x, y, false));
+      grid[y].push(t); gold[y].push(g);
+    }
+  }
+  player = mk(px, py, true);
+  eSpeed = Math.min(4.6, 3.1 + level * 0.07);
+  updateHud();
+}
+function startLevel() {
+  loadLevel();
+  banner = { text: 'Уровень ' + level, t: 1.6 };
+  state = 'play';
+}
+
+/* ---------- ввод ---------- */
+const held = {}; let stamp = 0;
+const input = { digL: false, digR: false };
+function setDir(d, on) { if (on) { if (!held[d]) held[d] = ++stamp; } else delete held[d]; }
+function wantedDir() { let best = null, bs = -1; for (const d in held) if (held[d] > bs) { bs = held[d]; best = d; } return best; }
+
+/* ---------- звук ---------- */
+let AC = null, muted = false;
+try { muted = localStorage.getItem('mr_mute') === '1'; } catch (e) {}
+function audio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (AC && AC.state === 'suspended') AC.resume();
+  return AC;
+}
+function beep(f, d, type, v, slide) {
+  if (muted) return; const ac = audio(); if (!ac) return;
+  d = d || .1; type = type || 'square'; v = v || .05;
+  const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+  o.type = type; o.frequency.setValueAtTime(f, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, f + slide), t + d);
+  g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.0001, t + d);
+  o.connect(g); g.connect(ac.destination); o.start(t); o.stop(t + d + .02);
+}
+const sfx = {
+  gold() { beep(880, .08); setTimeout(() => beep(1320, .1), 70); },
+  dig() { beep(170, .13, 'sawtooth', .06, -90); },
+  die() { beep(420, .55, 'sawtooth', .07, -360); },
+  open() { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, .12, 'triangle', .07), i * 90)); },
+  clear() { [659, 784, 988, 1318, 1568].forEach((f, i) => setTimeout(() => beep(f, .14, 'triangle', .07), i * 100)); },
+  trap() { beep(240, .15, 'square', .05, -120); }
+};
+
+/* ---------- эффекты ---------- */
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = .6 + Math.random() * 2.2;
+    parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 1, life: .5 + Math.random() * .4, max: .9, color, size: .05 + Math.random() * .06 });
+  }
+}
+
+/* ---------- движение ---------- */
+function speedFor(a, d) {
+  const falling = !standing(a.x, a.y, a);
+  if (a.isPlayer) { if (falling) return 8; if (d[1]) return 4.4; return isRope(a.x, a.y) ? 4.2 : 5.4; }
+  if (a.escaping) return 2.2;
+  if (falling) return 7;
+  if (d[1]) return eSpeed * .85;
+  return isRope(a.x, a.y) ? eSpeed * .9 : eSpeed;
+}
+
+function stepActor(a, dt, decide, arrive) {
+  let t = dt, guard = 0;
+  while (t > 0 && guard++ < 8) {
+    if (a.moving) {
+      const need = (1 - a.prog) / a.spd;
+      if (t >= need) {
+        t -= need; a.x = a.tx; a.y = a.ty; a.prog = 0; a.moving = false; a.ph += need * a.spd * 2.4;
+        arrive(a); if (state !== 'play') return;
+      } else { a.prog += t * a.spd; a.ph += t * a.spd * 2.4; t = 0; }
+    } else {
+      const d = decide(a);
+      if (!d) break;
+      a.tx = a.x + d[0]; a.ty = a.y + d[1]; a.moving = true; a.prog = 0; a.spd = speedFor(a, d);
+      if (d[0]) a.face = d[0];
+    }
+  }
+}
+
+function tryDig(p, dx) {
+  if (!isSolid(p.x, p.y + 1) || isLadder(p.x, p.y) || isRope(p.x, p.y)) return false;
+  const x = p.x + dx, y = p.y;
+  if (!inb(x, y + 1) || tile(x, y) !== ' ' || gold[y][x] || tile(x, y + 1) !== '#' || holeAt(x, y + 1)) return false;
+  if (enemyAt(x, y, null) || enemyAt(x, y + 1, null)) return false;
+  p.dig = DIG_T; p.digDx = dx; p.face = dx;
+  return true;
+}
+function finishDig(p) {
+  const x = p.x + p.digDx, y = p.y + 1;
+  if (tile(x, y) !== '#') return;
+  grid[y][x] = ' '; holes.push({ x, y, t: 0 });
+  sfx.dig(); burst(x + .5, y + .4, '#d1693a', 12);
+}
+
+function playerDecide(p) {
+  if (p.dig > 0) return null;
+  const opts = options(p.x, p.y, p);
+  const has = (dx, dy) => opts.some(o => o[0] === dx && o[1] === dy);
+  if (!standing(p.x, p.y, p)) return has(0, 1) ? [0, 1] : null;
+  if (input.digL || input.digR) { if (tryDig(p, input.digL ? -1 : 1)) return null; }
+  const w = wantedDir();
+  if (w === 'left' && has(-1, 0)) return [-1, 0];
+  if (w === 'right' && has(1, 0)) return [1, 0];
+  if (w === 'up' && has(0, -1)) return [0, -1];
+  if (w === 'down' && has(0, 1)) return [0, 1];
+  if (w === 'left') p.face = -1; else if (w === 'right') p.face = 1;
+  return null;
+}
+
+function playerArrive(p) {
+  if (gold[p.y][p.x]) {
+    gold[p.y][p.x] = false; goldLeft--; score += 100; sfx.gold();
+    burst(p.x + .5, p.y + .6, '#ffe27a', 9); updateHud();
+    if (goldLeft === 0) openExit();
+  }
+  if (exitOpen && p.y === 0) levelClear();
+}
+
+function openExit() {
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === 'S') grid[y][x] = 'H';
+  exitOpen = true; sfx.open(); banner = { text: 'Выход открыт! Наверх!', t: 2.0 };
+  if (player.y === 0) levelClear();
+}
+function levelClear() {
+  if (state !== 'play') return;
+  state = 'clear'; clearT = 1.8; score += 500; sfx.clear();
+  banner = { text: 'Уровень пройден!  +500', t: 1.8 };
+  try { const best = +(localStorage.getItem('mr_level') || 1); if (level + 1 > best) localStorage.setItem('mr_level', String(level + 1)); } catch (e) {}
+  updateHud();
+}
+function killPlayer() {
+  if (state !== 'play') return;
+  state = 'dying'; deathT = 1.1; lives--; sfx.die();
+  burst(player.x + .5, player.y + .5, '#e8bf94', 14); burst(player.x + .5, player.y + .5, '#2f78c9', 10);
+  updateHud();
+}
+
+/* ---------- стражи ---------- */
+const prevArr = new Int16Array(COLS * ROWS), qArr = new Int16Array(COLS * ROWS);
+function bfsStep(sx, sy, tx, ty, a) {
+  if (sx === tx && sy === ty) return null;
+  prevArr.fill(-1);
+  const s = sy * COLS + sx, goal = ty * COLS + tx;
+  // стражи «не замечают» ям: планируют путь так, будто кирпич на месте
+  for (const h of holes) grid[h.y][h.x] = '#';
+  let qh = 0, qt = 0; qArr[qt++] = s; prevArr[s] = s;
+  while (qh < qt) {
+    const c = qArr[qh++]; if (c === goal) break;
+    const cx = c % COLS, cy = (c / COLS) | 0;
+    const os = options(cx, cy, c === s ? a : null);
+    for (let i = 0; i < os.length; i++) {
+      const n = (cy + os[i][1]) * COLS + cx + os[i][0];
+      if (prevArr[n] === -1) { prevArr[n] = c; qArr[qt++] = n; }
+    }
+  }
+  for (const h of holes) grid[h.y][h.x] = ' ';
+  if (prevArr[goal] === -1) return null;
+  let c = goal; while (prevArr[c] !== s) c = prevArr[c];
+  return [c % COLS - sx, ((c / COLS) | 0) - sy];
+}
+function playerCell() { return player.moving && player.prog > .5 ? { x: player.tx, y: player.ty } : { x: player.x, y: player.y }; }
+
+function enemyDecide(e) {
+  if (e.dead) return null;
+  if (e.trapped) {
+    if (e.trapT > 0) return null;
+    if (canEnter(e.x, e.y - 1) && !enemyAt(e.x, e.y - 1, e) && !playerAt(e.x, e.y - 1)) { e.trapped = false; e.escaping = true; return [0, -1]; }
+    return null;
+  }
+  if (e.wait > 0) return null;
+  const opts = options(e.x, e.y, e);
+  if (!opts.length) return null;
+  if (!standing(e.x, e.y, e)) return opts[0];
+  let d = null;
+  if (Math.random() > 0.06) { const tp = playerCell(); d = bfsStep(e.x, e.y, tp.x, tp.y, e); }
+  if (!d) d = opts[(Math.random() * opts.length) | 0];
+  if (enemyAt(e.x + d[0], e.y + d[1], e)) { e.wait = .2; return null; }
+  return d;
+}
+function enemyArrive(e) {
+  if (e.escaping) { e.escaping = false; e.grace = true; return; }
+  e.grace = false;
+  if (holeAt(e.x, e.y) && isSolid(e.x, e.y + 1)) { e.trapped = true; e.trapT = 2.4 + Math.random() * 1.2; sfx.trap(); score += 25; updateHud(); }
+}
+function killEnemy(e) {
+  if (e.dead) return;
+  e.dead = true; e.respawn = 2.5; e.trapped = false; e.moving = false; e.escaping = false; e.grace = false;
+  burst(e.x + .5, e.y + .5, '#d4506d', 12); score += 75; updateHud();
+}
+function respawnEnemy(e) {
+  const c = [];
+  for (let y = 0; y <= (ROWS >> 1); y++) for (let x = 0; x < COLS; x++) {
+    if (grid[y][x] === ' ' && !gold[y][x] && (isSolid(x, y + 1) || isLadder(x, y + 1)) && !enemyAt(x, y, e) &&
+        Math.abs(x - player.x) + Math.abs(y - player.y) >= 7) c.push([x, y]);
+  }
+  const p = c.length ? c[(Math.random() * c.length) | 0] : [e.sx, e.sy];
+  Object.assign(e, { x: p[0], y: p[1], tx: p[0], ty: p[1], prog: 0, moving: false, trapped: false, escaping: false, grace: false, dead: false, flick: 1.2, wait: .3 });
+}
+
+/* ---------- яма ---------- */
+function refill(h) {
+  const inCell = a => {
+    if (!a || a.dead) return false;
+    const cx = a.moving && a.prog > .5 ? a.tx : a.x, cy = a.moving && a.prog > .5 ? a.ty : a.y;
+    return cx === h.x && cy === h.y;
+  };
+  if (inCell(player)) killPlayer();
+  for (const e of enemies) if (inCell(e)) killEnemy(e);
+  grid[h.y][h.x] = '#';
+  burst(h.x + .5, h.y + .5, '#a94a24', 6);
+}
+
+/* ---------- основной апдейт ---------- */
+function updatePlay(dt) {
+  const p = player;
+  if (p.dig > 0) { p.dig -= dt; if (p.dig <= 0) { p.dig = 0; finishDig(p); } }
+  stepActor(p, dt, playerDecide, playerArrive);
+  if (state !== 'play') return;
+  for (let i = holes.length - 1; i >= 0; i--) {
+    const h = holes[i]; h.t += dt;
+    if (h.t >= HOLE_TIME) { holes.splice(i, 1); refill(h); if (state !== 'play') return; }
+  }
+  for (const e of enemies) {
+    if (e.dead) { e.respawn -= dt; if (e.respawn <= 0) respawnEnemy(e); continue; }
+    if (e.flick > 0) e.flick -= dt;
+    if (e.wait > 0) e.wait -= dt;
+    if (e.trapped) e.trapT -= dt;
+    stepActor(e, dt, enemyDecide, enemyArrive);
+  }
+  for (const e of enemies) {
+    if (e.dead || e.trapped || e.flick > 0) continue;
+    const ex = e.x + (e.tx - e.x) * e.prog, ey = e.y + (e.ty - e.y) * e.prog;
+    const px = p.x + (p.tx - p.x) * p.prog, py = p.y + (p.ty - p.y) * p.prog;
+    if (Math.abs(ex - px) < .55 && Math.abs(ey - py) < .6) { killPlayer(); break; }
+  }
+}
+
+function update(dt) {
+  tNow += dt;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const q = parts[i]; q.life -= dt; q.x += q.vx * dt; q.y += q.vy * dt; q.vy += 6 * dt;
+    if (q.life <= 0) parts.splice(i, 1);
+  }
+  if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
+  if (state === 'play') updatePlay(dt);
+  else if (state === 'dying') {
+    deathT -= dt;
+    if (deathT <= 0) { if (lives > 0) startLevel(); else gameOver(); }
+  } else if (state === 'clear') {
+    clearT -= dt;
+    if (clearT <= 0) { level++; startLevel(); }
+  }
+}
+
+/* ---------- HUD / экраны ---------- */
+function updateHud() {
+  $('hLevel').textContent = 'Ур. ' + level;
+  $('hGold').textContent = '🪙 ' + goldLeft;
+  $('hScore').textContent = score;
+  $('hLives').textContent = '❤'.repeat(Math.max(0, lives));
+}
+function overlay(title, text, btns) {
+  $('oT').textContent = title; $('oP').innerHTML = text;
+  const b = $('oB'); b.innerHTML = '';
+  btns.forEach(([label, fn]) => {
+    const e = document.createElement('button'); e.className = 'btn'; e.textContent = label;
+    e.onclick = () => { audio(); hideOverlay(); fn(); };
+    b.appendChild(e);
+  });
+  $('overlay').style.display = 'flex';
+}
+function hideOverlay() { $('overlay').style.display = 'none'; }
+function overlayOpen() { return $('overlay').style.display === 'flex'; }
+
+function newGame(lv) { level = lv || 1; score = 0; lives = 3; startLevel(); }
+function showMenu() {
+  state = 'menu'; level = 1; loadLevel();
+  let saved = 1; try { saved = +(localStorage.getItem('mr_level') || 1); } catch (e) {}
+  const btns = [['Играть', () => newGame(1)]];
+  if (saved > 1) btns.push(['Продолжить: уровень ' + saved, () => newGame(saved)]);
+  overlay('MINE RUNNER',
+    'Собери всё золото 🪙, когда оно закончится — появится лестница наверх.<br>' +
+    '⛏ Копай ямы слева/справа от себя — стражи в них застревают. Яма зарастает через несколько секунд!<br>' +
+    '<small>Клавиатура: стрелки/WASD, Z / X — копать. Лучше играть в горизонтальном режиме.</small>', btns);
+}
+function gameOver() {
+  state = 'over';
+  let best = 0; try { best = +(localStorage.getItem('mr_best') || 0); if (score > best) { best = score; localStorage.setItem('mr_best', String(best)); } } catch (e) {}
+  overlay('Игра окончена', 'Счёт: <b>' + score + '</b><br>Рекорд: ' + best + '<br>Дошёл до уровня ' + level,
+    [['Заново', () => newGame(1)], ['Меню', showMenu]]);
+}
+function setPause(on) {
+  if (on) {
+    if (state !== 'play' || paused) return;
+    paused = true; overlay('Пауза', 'Игра остановлена.', [['Продолжить', () => { paused = false; }], ['В меню', () => { paused = false; showMenu(); }]]);
+  } else if (paused) { paused = false; hideOverlay(); }
+}
+
+/* =====================  ОТРИСОВКА  ===================== */
+let cv = null, ctx = null, T = 24, dpr = 1;
+function resize() {
+  if (!cv) return;
+  const wrap = $('wrap'); const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (!(w > 0 && h > 0)) return;
+  T = Math.max(8, Math.min(w / COLS, h / ROWS));
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  cv.style.width = (T * COLS) + 'px'; cv.style.height = (T * ROWS) + 'px';
+  cv.width = Math.round(T * COLS * dpr); cv.height = Math.round(T * ROWS * dpr);
+}
+function rr(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function brick(x, y) {
+  const px = x * T, py = y * T, h = T / 3;
+  ctx.fillStyle = '#a94a24'; ctx.fillRect(px, py, T, T);
+  ctx.fillStyle = '#d1693a'; ctx.fillRect(px, py, T, Math.max(1, T * .07));
+  ctx.fillStyle = '#6e2c14';
+  for (let r = 0; r < 3; r++) {
+    const y0 = py + r * h;
+    if (r) ctx.fillRect(px, y0 - .5, T, Math.max(1, T * .05));
+    const joints = r % 2 ? [.25, .75] : [.5];
+    for (const j of joints) ctx.fillRect(px + T * j - .5, y0, Math.max(1, T * .05), h);
+  }
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(px, py + T * .92, T, T * .08);
+}
+function steel(x, y) {
+  const px = x * T, py = y * T;
+  ctx.fillStyle = '#566476'; ctx.fillRect(px, py, T, T);
+  ctx.fillStyle = '#7e8da1'; ctx.fillRect(px, py, T, T * .1); ctx.fillRect(px, py, T * .1, T);
+  ctx.fillStyle = '#39434f'; ctx.fillRect(px, py + T * .9, T, T * .1); ctx.fillRect(px + T * .9, py, T * .1, T);
+  ctx.fillStyle = '#aab6c5';
+  for (const [a, b] of [[.22, .22], [.78, .22], [.22, .78], [.78, .78]]) { ctx.beginPath(); ctx.arc(px + a * T, py + b * T, T * .05, 0, 7); ctx.fill(); }
+}
+function ladder(x, y, alpha) {
+  const px = x * T, py = y * T;
+  ctx.globalAlpha = alpha; ctx.fillStyle = '#e2c887';
+  ctx.fillRect(px + T * .2, py, T * .09, T); ctx.fillRect(px + T * .71, py, T * .09, T);
+  for (let i = 0; i < 4; i++) ctx.fillRect(px + T * .2, py + T * (.1 + i * .25), T * .6, T * .07);
+  ctx.globalAlpha = 1;
+}
+function rope(x, y) {
+  const px = x * T, py = y * T + T * .16;
+  ctx.strokeStyle = '#cfa860'; ctx.lineWidth = Math.max(2, T * .09);
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + T, py); ctx.stroke();
+  ctx.strokeStyle = '#7a5a2a'; ctx.lineWidth = Math.max(1, T * .04); ctx.setLineDash([T * .1, T * .12]);
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + T, py); ctx.stroke(); ctx.setLineDash([]);
+}
+function goldDraw(x, y) {
+  const cx = (x + .5) * T, cy = (y + .74) * T, w = T * .52, h = T * .26, b = Math.sin(tNow * 3 + x * 1.7) * T * .02;
+  ctx.fillStyle = 'rgba(255,214,80,.18)'; ctx.beginPath(); ctx.arc(cx, cy - T * .05, T * (.34 + Math.sin(tNow * 3 + x) * .03), 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(cx - w * .34, cy - h / 2 + b); ctx.lineTo(cx + w * .34, cy - h / 2 + b); ctx.lineTo(cx + w / 2, cy + h / 2); ctx.lineTo(cx - w / 2, cy + h / 2); ctx.closePath();
+  ctx.fillStyle = '#f2c230'; ctx.fill(); ctx.strokeStyle = '#a8780a'; ctx.lineWidth = Math.max(1, T * .04); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.fillRect(cx - w * .25, cy - h / 2 + b + T * .03, w * .3, T * .03);
+  if (((tNow * 2 + x * .37 + y * .21) % 2) < .25) { ctx.fillStyle = '#fff'; ctx.fillRect(cx + w * .2, cy - h * .9, T * .05, T * .12); ctx.fillRect(cx + w * .2 - T * .035, cy - h * .9 + T * .035, T * .12, T * .05); }
+}
+
+const MN = { leg: '#1f3d6d', leg2: '#183258', arm: '#e8bf94', arm2: '#c99e74', body: '#2f78c9', belt: '#6b4a1e' };
+const EN = { leg: '#5a1c31', leg2: '#431324', arm: '#d4506d', arm2: '#a93a56', body: '#8e2c48', belt: '#2b1018' };
+
+function poseOf(a) {
+  if (a.dig > 0) return 'dig';
+  if (a.escaping && a.moving) return 'climb';
+  const sd = standing(a.x, a.y, a);
+  if (a.moving) {
+    if (a.ty !== a.y) return !sd ? 'fall' : ((isLadder(a.x, a.y) || isLadder(a.tx, a.ty)) ? 'climb' : 'fall');
+    return (isRope(a.x, a.y) || isRope(a.tx, a.ty)) ? 'rope' : 'run';
+  }
+  if (!sd) return 'fall';
+  if (isRope(a.x, a.y)) return 'rope';
+  if (isLadder(a.x, a.y) && !isSolid(a.x, a.y + 1)) return 'climb';
+  return 'idle';
+}
+
+function drawActor(a, en) {
+  const rx = a.x + (a.tx - a.x) * a.prog, ry = a.y + (a.ty - a.y) * a.prog;
+  const ps = poseOf(a), col = en ? EN : MN;
+  ctx.save();
+  ctx.translate(rx * T, ry * T); ctx.scale(T, T);
+  if (a.flick > 0 && ((tNow * 12) | 0) % 2) ctx.globalAlpha = .35;
+  ctx.translate(.5, 0);
+  ctx.scale(ps === 'climb' ? 1 : (a.face < 0 ? -1 : 1), 1);
+  const s = Math.sin(a.ph), s2 = -s;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  let L1, L2, A1, A2;
+  switch (ps) {
+    case 'run': L1 = [s * .17, .96 - Math.max(0, s2) * .08]; L2 = [s2 * .17, .96 - Math.max(0, s) * .08]; A1 = [s2 * .16, .64]; A2 = [s * .16, .64]; break;
+    case 'climb': L1 = [-.07, .93 - Math.max(0, s) * .1]; L2 = [.07, .93 - Math.max(0, s2) * .1]; A1 = [-.14, .3 + s * .12]; A2 = [.14, .3 + s2 * .12]; break;
+    case 'rope': L1 = [-.05 + s * .03, .93]; L2 = [.05 + s * .03, .93]; A1 = [-.07, .12]; A2 = [.09, .12]; break;
+    case 'fall': L1 = [-.13, .95]; L2 = [.13, .9]; A1 = [-.21, .26]; A2 = [.21, .26]; break;
+    case 'dig': { const pr = 1 - a.dig / DIG_T, ang = -1.25 + pr * 2.1; L1 = [-.08, .96]; L2 = [.08, .96]; A1 = A2 = [Math.cos(ang) * .17, .47 + Math.sin(ang) * .17]; break; }
+    default: L1 = [-.07, .96]; L2 = [.07, .96]; A1 = [-.15, .64]; A2 = [.15, .64];
+  }
+  const limb = (x1, y1, x2, y2, c, w) => { ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  limb(0, .47, A2[0], A2[1], col.arm2, .085);
+  limb(0, .62, L2[0], L2[1], col.leg2, .11);
+  ctx.fillStyle = col.body; rr(-.15, .4, .3, .27, .06); ctx.fill();
+  ctx.fillStyle = col.belt; ctx.fillRect(-.15, .58, .3, .04);
+  // голова
+  if (!en) {
+    ctx.fillStyle = '#f0c9a0'; ctx.beginPath(); ctx.arc(0, .29, .13, 0, 7); ctx.fill();
+    ctx.fillStyle = '#f2b705'; ctx.beginPath(); ctx.arc(0, .27, .155, Math.PI, 0); ctx.fill();
+    ctx.fillRect(-.19, .262, .38, .035);
+    ctx.fillStyle = 'rgba(255,250,190,.28)'; ctx.beginPath(); ctx.arc(.1, .2, .07, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fffbd0'; ctx.beginPath(); ctx.arc(.1, .2, .035, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2a1a10'; ctx.fillRect(.05, .3, .03, .04);
+  } else {
+    ctx.fillStyle = '#e8a6b4';
+    ctx.beginPath(); ctx.moveTo(-.11, .2); ctx.lineTo(-.17, .03); ctx.lineTo(-.03, .16); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(.11, .2); ctx.lineTo(.17, .03); ctx.lineTo(.03, .16); ctx.fill();
+    ctx.fillStyle = '#d8506f'; ctx.beginPath(); ctx.arc(0, .29, .14, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffe14d'; ctx.beginPath(); ctx.arc(-.045, .27, .03, 0, 7); ctx.arc(.07, .27, .03, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2a0c14'; ctx.fillRect(.065, .265, .02, .035); ctx.fillRect(-.05, .265, .02, .035);
+    ctx.strokeStyle = '#2a0c14'; ctx.lineWidth = .018; ctx.beginPath(); ctx.moveTo(-.04, .35); ctx.lineTo(.08, .35); ctx.stroke();
+  }
+  limb(0, .62, L1[0], L1[1], col.leg, .11);
+  limb(0, .47, A1[0], A1[1], col.arm, .085);
+  if (ps === 'dig') {
+    const pr = 1 - a.dig / DIG_T, ang = -1.25 + pr * 2.1, hx = Math.cos(ang) * .36, hy = .47 + Math.sin(ang) * .36;
+    limb(Math.cos(ang) * .1, .47 + Math.sin(ang) * .1, hx, hy, '#8a5a2b', .045);
+    limb(hx - Math.sin(ang) * .11, hy + Math.cos(ang) * .11, hx + Math.sin(ang) * .11, hy - Math.cos(ang) * .11, '#c9ccd4', .05);
+  }
+  if (a.trapped) {
+    ctx.fillStyle = '#ffe27a';
+    for (let i = 0; i < 3; i++) { const g = tNow * 4 + i * 2.1; ctx.fillRect(Math.cos(g) * .2 - .02, .06 + Math.sin(g) * .05, .05, .05); }
+  }
+  ctx.restore();
+}
+
+function draw() {
+  if (!ctx || !grid.length) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = COLS * T, H = ROWS * T;
+  const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#2a1d15'); bg.addColorStop(1, '#140e0a');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const c = grid[y][x];
+    if (c === '#') brick(x, y); else if (c === '=') steel(x, y); else if (c === 'H') ladder(x, y, 1);
+    else if (c === '-') rope(x, y); else if (c === 'S' && !exitOpen) ladder(x, y, .1);
+    if (gold[y][x]) goldDraw(x, y);
+  }
+  for (const h of holes) {
+    const k = h.t - (HOLE_TIME - 1);
+    if (k > 0) { ctx.globalAlpha = Math.min(1, k); brick(h.x, h.y); ctx.globalAlpha = 1; }
+  }
+  for (const e of enemies) if (!e.dead) drawActor(e, true);
+  if (player && state !== 'dying') drawActor(player, false);
+  for (const q of parts) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, q.life / q.max)); ctx.fillStyle = q.color;
+    ctx.fillRect(q.x * T, q.y * T, q.size * T, q.size * T);
+  }
+  ctx.globalAlpha = 1;
+  if (banner) {
+    const al = Math.min(1, banner.t * 2.5);
+    ctx.globalAlpha = al; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold ' + Math.round(T * 1.05) + 'px system-ui,sans-serif';
+    ctx.lineWidth = T * .18; ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.strokeText(banner.text, W / 2, H * .42);
+    ctx.fillStyle = '#ffd34d'; ctx.fillText(banner.text, W / 2, H * .42); ctx.globalAlpha = 1;
+  }
+}
+
+/* ---------- цикл ---------- */
+let last = 0;
+function frame(ts) {
+  const dt = Math.min(.05, (ts - last) / 1000 || 0); last = ts;
+  if (!paused) update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+/* ---------- привязка ввода ---------- */
+function bindUI() {
+  cv = $('cv'); ctx = cv.getContext('2d');
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => setTimeout(resize, 150));
+  if (window.ResizeObserver) new ResizeObserver(resize).observe($('wrap'));
+
+  const DIRS = ['left', 'right', 'up', 'down'];
+  const pad = $('pad'); let padPtr = null;
+  const padArrows = {}; DIRS.forEach(d => padArrows[d] = pad.querySelector('.' + d));
+  const showDirs = () => DIRS.forEach(d => padArrows[d].classList.toggle('on', !!held[d]));
+  const padUpdate = e => {
+    const r = pad.getBoundingClientRect(), dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+    let d = null;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) > r.width * .12) d = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
+    DIRS.forEach(k => setDir(k, k === d)); showDirs();
+  };
+  const padEnd = e => { if (e.pointerId === padPtr) { padPtr = null; DIRS.forEach(k => setDir(k, false)); showDirs(); } };
+  pad.addEventListener('pointerdown', e => { padPtr = e.pointerId; try { pad.setPointerCapture(e.pointerId); } catch (_) {} padUpdate(e); audio(); e.preventDefault(); });
+  pad.addEventListener('pointermove', e => { if (e.pointerId === padPtr) padUpdate(e); });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(n => pad.addEventListener(n, padEnd));
+
+  const bindDig = (id, key) => {
+    const b = $(id);
+    const on = e => { input[key] = true; b.classList.add('on'); try { b.setPointerCapture(e.pointerId); } catch (_) {} audio(); e.preventDefault(); };
+    const off = () => { input[key] = false; b.classList.remove('on'); };
+    b.addEventListener('pointerdown', on);
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(n => b.addEventListener(n, off));
+  };
+  bindDig('digL', 'digL'); bindDig('digR', 'digR');
+
+  const KEYS = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down' };
+  window.addEventListener('keydown', e => {
+    if (overlayOpen()) { if (e.code === 'Enter' || e.code === 'Space') { const b = $('oB').querySelector('button'); if (b) b.click(); e.preventDefault(); } return; }
+    if (KEYS[e.code]) { setDir(KEYS[e.code], true); showDirs(); e.preventDefault(); }
+    else if (e.code === 'KeyZ' || e.code === 'KeyQ' || e.code === 'Comma') { input.digL = true; e.preventDefault(); }
+    else if (e.code === 'KeyX' || e.code === 'KeyE' || e.code === 'Period') { input.digR = true; e.preventDefault(); }
+    else if (e.code === 'KeyP' || e.code === 'Escape') setPause(true);
+  });
+  window.addEventListener('keyup', e => {
+    if (KEYS[e.code]) { setDir(KEYS[e.code], false); showDirs(); }
+    else if (e.code === 'KeyZ' || e.code === 'KeyQ' || e.code === 'Comma') input.digL = false;
+    else if (e.code === 'KeyX' || e.code === 'KeyE' || e.code === 'Period') input.digR = false;
+  });
+  window.addEventListener('contextmenu', e => e.preventDefault());
+  window.addEventListener('blur', () => { DIRS.forEach(k => setDir(k, false)); input.digL = input.digR = false; showDirs(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) setPause(true); });
+
+  $('bPause').onclick = () => setPause(true);
+  const snd = $('bSound');
+  const sndUpd = () => { snd.textContent = muted ? '🔇' : '🔊'; };
+  snd.onclick = () => { muted = !muted; try { localStorage.setItem('mr_mute', muted ? '1' : '0'); } catch (e) {} sndUpd(); if (!muted) { audio(); beep(660, .08); } };
+  sndUpd();
+
+  if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
+  showMenu();
+  requestAnimationFrame(frame);
+}
+
+if (typeof window !== 'undefined') {
+  window.__MR = {
+    get G() { return { grid, gold, goldLeft, exitOpen, holes, enemies, player, state, level, score, lives }; },
+    options, standing, isSolid, loadLevel, startLevel, update, getLevel, genLevel, levelValid, setLevel(n) { level = n; },
+    setDir, input, setLives(n) { lives = n; }, COLS, ROWS, HOLE_TIME, bfsStep, tile, setEnemies(a) { enemies = a; }, mk,
+    HAND
+  };
+  bindUI();
+}
+</script>
+</body>
+</html>

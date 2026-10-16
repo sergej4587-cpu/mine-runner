@@ -1,0 +1,15 @@
+{
+  "name": "mine-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mine Runner — игра в жанре Lode Runner (оригинальные персонажи и уровни)",
+  "scripts": {
+    "sync": "cap sync android",
+    "apk": "cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/cli": "^7.0.0",
+    "@capacitor/core": "^7.0.0"
+  }
+}
